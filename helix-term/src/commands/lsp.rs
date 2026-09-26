@@ -596,6 +596,14 @@ impl ui::menu::Item for CodeActionItem {
 }
 
 pub fn code_action(cx: &mut Context) {
+    code_action_inner(cx, false);
+}
+
+pub fn code_action_picker(cx: &mut Context) {
+    code_action_inner(cx, true);
+}
+
+pub fn code_action_inner(cx: &mut Context, use_picker: bool) {
     let (view, doc) = current!(cx.editor);
 
     let selection_range = doc.selection(view.id).primary();
@@ -644,29 +652,61 @@ pub fn code_action(cx: &mut Context) {
         // `lsp_code_action_priority` for how LSP actions are ranked.
         actions.sort_by_key(|action| std::cmp::Reverse(action.priority));
 
-        let call = move |editor: &mut Editor, compositor: &mut Compositor| {
-            if actions.is_empty() {
-                editor.set_error("No code actions available");
+        if use_picker {
+            code_action_inner_picker(actions)
+        } else {
+            code_action_inner_menu(actions)
+        }
+    });
+}
+
+fn code_action_inner_menu(actions: Vec<CodeActionItem>) -> Result<Callback, anyhow::Error> {
+    let call = move |editor: &mut Editor, compositor: &mut Compositor| {
+        if actions.is_empty() {
+            editor.set_error("No code actions available");
+            return;
+        }
+        let mut picker = ui::Menu::new(actions, (), move |editor, action, event| {
+            if event != PromptEvent::Validate {
                 return;
             }
-            let mut picker = ui::Menu::new(actions, (), move |editor, action, event| {
-                if event != PromptEvent::Validate {
-                    return;
-                }
-                // Always present on validate.
-                action.unwrap().execute(editor);
-            });
-            picker.move_down(); // pre-select the first item
+            // Always present on validate.
+            action.unwrap().execute(editor);
+        });
+        picker.move_down(); // pre-select the first item
 
-            let popup = Popup::new("code-action", picker)
-                .with_scrollbar(false)
-                .auto_close(true);
+        let popup = Popup::new("code-action", picker)
+            .with_scrollbar(false)
+            .auto_close(true);
 
-            compositor.replace_or_push("code-action", popup);
-        };
+        compositor.replace_or_push("code-action", popup);
+    };
 
-        Ok(Callback::EditorCompositor(Box::new(call)))
-    });
+    Ok(Callback::EditorCompositor(Box::new(call)))
+}
+
+fn code_action_inner_picker(actions: Vec<CodeActionItem>) -> Result<Callback, anyhow::Error> {
+    let call = move |editor: &mut Editor, compositor: &mut Compositor| {
+        if actions.is_empty() {
+            editor.set_error("No code actions available");
+            return;
+        }
+        let columns = [ui::PickerColumn::new(
+            "code-action",
+            |item: &CodeActionItem, _| item.title().into(),
+        )];
+        let picker = ui::Picker::new(
+            columns,
+            0, // name column
+            actions,
+            (),
+            move |cx: &mut crate::compositor::Context, item, _action| {
+                item.execute(cx.editor);
+            },
+        );
+        compositor.push(Box::new(overlaid(picker)));
+    };
+    Ok(Callback::EditorCompositor(Box::new(call)))
 }
 
 // Extracting this to a type alias would require boxing this future
